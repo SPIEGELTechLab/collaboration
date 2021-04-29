@@ -7,7 +7,7 @@ export default class Workspace {
         this.storeSubscriber = null;
         this.lastValues = {};
         this.lastMetaValues = {};
-        this.user = Statamic.user;
+        this.user = { id: Statamic.user.id, name: Statamic.user.name, initials: Statamic.user.initials };
         this.initialStateUpdated = false;
 
         this.debouncedBroadcastValueChangeFuncsByHandle = {};
@@ -65,12 +65,27 @@ export default class Workspace {
             this.playAudio('buddy-out');
         });
 
-        this.listenForWhisper('updated', e => {
-            this.applyBroadcastedValueChange(e);
+        this.listenForWhisper('updated', payload => {
+            let { user, handle, value } = payload;
+            const focus = Statamic.$store.state.collaboration[this.channelName].focus[user];
+            if (focus && focus.setId) {
+                if (focus.handle !== handle) return;
+                const updatedSet = value.find(set => set._id === focus.setId);
+                if (!updatedSet) return;
+                value = this.lastValues[handle].map(set => set._id === focus.setId ? updatedSet : set);
+            }
+            this.applyBroadcastedValueChange({ user, handle, value });
         });
 
-        this.listenForWhisper('meta-updated', e => {
-            this.applyBroadcastedMetaChange(e);
+        this.listenForWhisper('meta-updated', payload => {
+            const { user, handle, value } = payload;
+            const focus = Statamic.$store.state.collaboration[this.channelName].focus[user];
+            if (focus && focus.setId) {
+                if (focus.handle !== handle) return;
+                value.existing = { ...this.lastMetaValues[handle].existing };
+                value.existing[focus.setId] = value.existing[focus.setId];
+            }
+            this.applyBroadcastedMetaChange({ user, handle, value });
         });
 
         this.listenForWhisper(`initialize-state-for-${this.user.id}`, payload => {
@@ -78,7 +93,13 @@ export default class Workspace {
             this.debug('✅ Applying broadcasted state change', payload);
             Statamic.$store.dispatch(`publish/${this.container.name}/setValues`, payload.values);
             Statamic.$store.dispatch(`publish/${this.container.name}/setMeta`, this.restoreEntireMetaPayload(payload.meta));
-            _.each(payload.focus, ({ user, handle }) => this.focusAndLock(user, handle));
+            _.each(payload.focus, ({ user, handle, setId }) => {
+                if (setId) {
+                    this.focusAndLockReplicatorSet(user, handle, setId);
+                } else {
+                    this.focusAndLock(user, handle);
+                }
+            });
             this.initialStateUpdated = true;
         });
 
@@ -87,9 +108,19 @@ export default class Workspace {
             this.focusAndLock(user, handle);
         });
 
+        this.listenForWhisper('focus-set', ({ user, handle, id }) => {
+            this.debug(`Heard that user has focused a replicator set`, { user, handle, id });
+            this.focusAndLockReplicatorSet(user, handle, id);
+        });
+
         this.listenForWhisper('blur', ({ user, handle }) => {
             this.debug(`Heard that user has blurred`, { user, handle });
             this.blurAndUnlock(user, handle);
+        });
+
+        this.listenForWhisper('blur-set', ({ user, handle, id }) => {
+            this.debug(`Heard that user has blurred out of replicator set`, { user, handle, id });
+            this.blurAndUnlockReplicatorSet(user, handle, id);
         });
 
         this.listenForWhisper('force-unlock', ({ targetUser, originUser }) => {
@@ -98,6 +129,7 @@ export default class Workspace {
             if (targetUser.id !== this.user.id) return;
 
             document.activeElement.blur();
+            this.blurAndUnlockReplicatorSet(this.user);
             this.blurAndUnlock(this.user);
             this.whisper('blur', { user: this.user });
             Statamic.$toast.info(`${originUser.name} has unlocked your editor.`, { duration: false });
@@ -143,8 +175,8 @@ export default class Workspace {
                 removeUser(state, removedUser) {
                     state.users = state.users.filter(user => user.id !== removedUser.id);
                 },
-                focus(state, { handle, user }) {
-                    Vue.set(state.focus, user.id, { handle, user });
+                focus(state, { handle, user, setId }) {
+                    Vue.set(state.focus, user.id, { handle, user, setId });
                 },
                 blur(state, user) {
                     Vue.delete(state.focus, user.id);
@@ -200,18 +232,33 @@ export default class Workspace {
         });
         this.container.$on('blur', handle => {
             const user = this.user;
-            this.blur(user, handle);
+            this.blur(user);
             this.whisper('blur', { user, handle });
+        });
+        this.container.$on('focus-set', params => {
+            const user = this.user;
+            this.focus(user, params.handle, params.id);
+            this.whisper('focus-set', { user, ...params });
+        });
+        this.container.$on('blur-set', params => {
+            const user = this.user;
+            this.blur(user);
+            this.whisper('blur-set', { user, ...params });
         });
     }
 
-    focus(user, handle) {
-        Statamic.$store.commit(`collaboration/${this.channelName}/focus`, { user, handle });
+    focus(user, handle, setId = null) {
+        Statamic.$store.commit(`collaboration/${this.channelName}/focus`, { user, handle, setId });
     }
 
     focusAndLock(user, handle) {
         this.focus(user, handle);
         Statamic.$store.commit(`publish/${this.container.name}/lockField`, { user, handle });
+    }
+
+    focusAndLockReplicatorSet(user, handle, setId) {
+        this.focus(user, handle, setId);
+        Statamic.$store.commit(`publish/${this.container.name}/lockReplicatorSet`, { user, handle, setId });
     }
 
     blur(user) {
@@ -223,6 +270,15 @@ export default class Workspace {
         if (!handle) return;
         this.blur(user);
         Statamic.$store.commit(`publish/${this.container.name}/unlockField`, handle);
+    }
+
+    blurAndUnlockReplicatorSet(user, handle = null, setId = null) {
+        if (!handle || !setId) {
+            ({ handle, setId } = data_get(Statamic.$store.state.collaboration[this.channelName], `focus.${this.user.id}`));
+        }
+        if (!handle || !setId) return;
+        this.blur(user);
+        Statamic.$store.commit(`publish/${this.container.name}/unlockReplicatorSet`, { handle, setId });
     }
 
     subscribeToVuexMutations() {
