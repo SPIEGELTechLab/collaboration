@@ -109,7 +109,6 @@ export default class Workspace {
             Statamic.$components.append('CollaborationBlockingNotification', {
                 props: { message: messageProp }
             }).on('confirm', () => window.location.reload());
-            this.destroy(); // Stop listening to anything else.
         });
 
         this.listenForWhisper('revision-restored', ({ user }) => {

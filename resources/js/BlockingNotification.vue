@@ -1,7 +1,7 @@
 <template>
 
     <modal name="confirmation-modal" :pivotY="0.1" :overflow="false">
-        <div class="confirmation-modal flex flex-col h-full">
+        <div class="confirmation-modal flex flex-col h-full" slot-scope="{ close }">
             <div class="text-lg font-medium p-2 pb-0">
                 Refresh Required
             </div>
@@ -9,6 +9,7 @@
                 {{ message }}
             </div>
             <div class="p-2 bg-grey-20 border-t flex items-center justify-end text-sm">
+                <button class="btn btn-default ml-2" @click="close">Continue without reload</button>
                 <button class="btn btn-primary ml-2" @click="$emit('confirm')">Refresh</button>
             </div>
         </div>
